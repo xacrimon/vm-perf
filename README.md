@@ -9,40 +9,44 @@ The benchmarks are not particularly scientific. Take them with a pinch of salt.
 Benchmarks were performed on a 16 core AMD Ryzen 7 3700X.
 
 ```
-test bytecode_closures_compile           ... bench:         440 ns/iter (+/- 5)
-test bytecode_closures_execute           ... bench:     272,928 ns/iter (+/- 6,565)
+test bytecode_closures_compile           ... bench:         263.61 ns/iter (+/- 20.72)
+test bytecode_closures_execute           ... bench:     136,063.45 ns/iter (+/- 10,884.46)
 
-test bytecode_compile                    ... bench:         170 ns/iter (+/- 4)
-test bytecode_execute                    ... bench:     133,028 ns/iter (+/- 18,037)
+test bytecode_compile                    ... bench:         128.76 ns/iter (+/- 13.41)
+test bytecode_execute                    ... bench:      95,541.25 ns/iter (+/- 8,267.20)
 
-test closure_continuations_compile       ... bench:         400 ns/iter (+/- 12)
-test closure_continuations_execute       ... bench:      38,501 ns/iter (+/- 1,162)
+test bytecode_register_compile           ... bench:          94.96 ns/iter (+/- 8.63)
+test bytecode_register_execute           ... bench:      40,637.19 ns/iter (+/- 4,585.22)
 
-test closure_stack_continuations_compile ... bench:         407 ns/iter (+/- 13)
-test closure_stack_continuations_execute ... bench:      55,571 ns/iter (+/- 800)
+test bytecode_register_become_compile    ... bench:         126.42 ns/iter (+/- 6.66)
+test bytecode_register_become_execute    ... bench:      25,092.47 ns/iter (+/- 2,660.43)
 
-test closures_compile                    ... bench:         348 ns/iter (+/- 41)
-test closures_execute                    ... bench:      80,409 ns/iter (+/- 547)
+test closure_continuations_compile       ... bench:          93.92 ns/iter (+/- 6.42)
+test closure_continuations_execute       ... bench:      24,462.99 ns/iter (+/- 383.64)
 
-test register_closures_compile           ... bench:         158 ns/iter (+/- 3)
-test register_closures_execute           ... bench:      83,567 ns/iter (+/- 3,280)
+test closure_stack_continuations_compile ... bench:         104.73 ns/iter (+/- 8.26)
+test closure_stack_continuations_execute ... bench:      28,798.22 ns/iter (+/- 2,088.12)
 
-test stack_closures_compile              ... bench:         501 ns/iter (+/- 14)
-test stack_closures_execute              ... bench:     274,446 ns/iter (+/- 3,623)
+test closures_compile                    ... bench:          82.87 ns/iter (+/- 9.15)
+test closures_execute                    ... bench:      38,680.54 ns/iter (+/- 1,061.34)
 
-test tape_closures_compile               ... bench:         146 ns/iter (+/- 8)
-test tape_closures_execute               ... bench:     199,621 ns/iter (+/- 1,932)
+test register_closures_compile           ... bench:         152.99 ns/iter (+/- 10.11)
+test register_closures_execute           ... bench:      39,213.61 ns/iter (+/- 823.45)
 
-test tape_continuations_compile          ... bench:         148 ns/iter (+/- 2)
-test tape_continuations_execute          ... bench:      42,476 ns/iter (+/- 1,298)
+test rust_execute                        ... bench:      26,944.06 ns/iter (+/- 2,105.88)
+test rust_opt_execute                    ... bench:           0.70 ns/iter (+/- 0.04)
 
-test walker_compile                      ... bench:           0 ns/iter (+/- 0)
-test walker_execute                      ... bench:     242,722 ns/iter (+/- 6,891)
+test stack_closures_compile              ... bench:         272.29 ns/iter (+/- 26.45)
+test stack_closures_execute              ... bench:     137,509.03 ns/iter (+/- 5,658.82)
 
+test tape_closures_compile               ... bench:         109.04 ns/iter (+/- 7.66)
+test tape_closures_execute               ... bench:      92,271.36 ns/iter (+/- 2,685.96)
 
+test tape_continuations_compile          ... bench:         109.42 ns/iter (+/- 10.74)
+test tape_continuations_execute          ... bench:      27,725.32 ns/iter (+/- 980.05)
 
-test rust_execute                        ... bench:      17,104 ns/iter (+/- 4,848)
-test rust_opt_execute                    ... bench:           1 ns/iter (+/- 0)
+test walker_compile                      ... bench:           0.22 ns/iter (+/- 0.00)
+test walker_execute                      ... bench:     107,587.50 ns/iter (+/- 6,311.80)
 ```
 
 `rust_execute` and `rust_opt_execute` are 'standard candles', implemented in native Rust code. The former has very few

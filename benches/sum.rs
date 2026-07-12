@@ -5,7 +5,7 @@ use test::{black_box, Bencher};
 use vm_perf::{
     Bytecode, BytecodeClosures, BytecodeRegister, BytecodeRegisterBecome, ClosureContinuations,
     ClosureStackContinuations, Closures, Expr, RegisterClosures, StackClosures, TapeClosures,
-    TapeContinuations, Vm, Walker,
+    TapeContinuations, TemplateJit, Vm, Walker,
 };
 
 fn create_expr() -> Expr {
@@ -127,6 +127,15 @@ fn bytecode_register_become_compile(b: &mut Bencher) {
 #[bench]
 fn bytecode_register_become_execute(b: &mut Bencher) {
     bench_execute::<BytecodeRegisterBecome>(b)
+}
+// Template JIT (copy-and-patch)
+#[bench]
+fn template_jit_compile(b: &mut Bencher) {
+    bench_compile::<TemplateJit>(b)
+}
+#[bench]
+fn template_jit_execute(b: &mut Bencher) {
+    bench_execute::<TemplateJit>(b)
 }
 // Closures
 #[bench]

@@ -13,6 +13,7 @@ pub mod register_closures;
 pub mod stack_closures;
 pub mod tape_closures;
 pub mod tape_continuations;
+pub mod template_jit;
 pub mod walker;
 
 pub use crate::{
@@ -21,7 +22,8 @@ pub use crate::{
     closure_continuations::ClosureContinuations,
     closure_stack_continuations::ClosureStackContinuations, closures::Closures,
     register_closures::RegisterClosures, stack_closures::StackClosures,
-    tape_closures::TapeClosures, tape_continuations::TapeContinuations, walker::Walker,
+    tape_closures::TapeClosures, tape_continuations::TapeContinuations,
+    template_jit::TemplateJit, walker::Walker,
 };
 
 // Relative to the top of the locals stack

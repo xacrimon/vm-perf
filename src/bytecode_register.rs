@@ -33,14 +33,6 @@ impl Vm for BytecodeRegister {
             }
         }
 
-        // `depth` is the number of `Let`-bound locals currently in scope; each local
-        // is permanently assigned register `binding_depth` for the extent of its scope,
-        // mirroring how the stack VM's `locals` grows/shrinks with nesting.
-        //
-        // `next_reg` is a bump watermark for temporaries, always >= depth. Returns the
-        // register holding the expression's result, plus whether that register is a
-        // fresh temporary the caller is free to overwrite (as opposed to a local's
-        // register, which must not be clobbered since it may be read again later).
         fn compile_inner(ctx: &mut Ctx, expr: &Expr, depth: usize, next_reg: usize) -> (usize, bool) {
             match expr {
                 Expr::Litr(x) => {
@@ -83,7 +75,7 @@ impl Vm for BytecodeRegister {
                     let start = ctx.ops.len();
                     let (r_pred, _) = compile_inner(ctx, pred, depth, depth);
                     let branch_fixup = ctx.ops.len();
-                    ctx.ops.push(Op::JmpZN(r_pred, 0)); // Will be fixed up
+                    ctx.ops.push(Op::JmpZN(r_pred, 0));
                     compile_inner(ctx, body, depth, depth);
                     ctx.ops.push(Op::Jmp(start));
                     let end = ctx.ops.len();

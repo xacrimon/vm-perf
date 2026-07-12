@@ -1,7 +1,11 @@
 #![feature(let_chains)]
+#![feature(rust_preserve_none_cc)]
+#![feature(explicit_tail_calls)]
 
 pub mod bytecode;
 pub mod bytecode_closures;
+pub mod bytecode_register;
+pub mod bytecode_register_become;
 pub mod closure_continuations;
 pub mod closure_stack_continuations;
 pub mod closures;
@@ -12,7 +16,8 @@ pub mod tape_continuations;
 pub mod walker;
 
 pub use crate::{
-    bytecode::Bytecode, bytecode_closures::BytecodeClosures,
+    bytecode::Bytecode, bytecode_closures::BytecodeClosures, bytecode_register::BytecodeRegister,
+    bytecode_register_become::BytecodeRegister as BytecodeRegisterBecome,
     closure_continuations::ClosureContinuations,
     closure_stack_continuations::ClosureStackContinuations, closures::Closures,
     register_closures::RegisterClosures, stack_closures::StackClosures,

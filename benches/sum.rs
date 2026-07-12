@@ -3,8 +3,9 @@
 extern crate test;
 use test::{black_box, Bencher};
 use vm_perf::{
-    Bytecode, BytecodeClosures, ClosureContinuations, ClosureStackContinuations, Closures, Expr,
-    RegisterClosures, StackClosures, TapeClosures, TapeContinuations, Vm, Walker,
+    Bytecode, BytecodeClosures, BytecodeRegister, BytecodeRegisterBecome, ClosureContinuations,
+    ClosureStackContinuations, Closures, Expr, RegisterClosures, StackClosures, TapeClosures,
+    TapeContinuations, Vm, Walker,
 };
 
 fn create_expr() -> Expr {
@@ -108,6 +109,24 @@ fn bytecode_compile(b: &mut Bencher) {
 #[bench]
 fn bytecode_execute(b: &mut Bencher) {
     bench_execute::<Bytecode>(b)
+}
+// Bytecode register
+#[bench]
+fn bytecode_register_compile(b: &mut Bencher) {
+    bench_compile::<BytecodeRegister>(b)
+}
+#[bench]
+fn bytecode_register_execute(b: &mut Bencher) {
+    bench_execute::<BytecodeRegister>(b)
+}
+// Bytecode register (tail-call dispatch)
+#[bench]
+fn bytecode_register_become_compile(b: &mut Bencher) {
+    bench_compile::<BytecodeRegisterBecome>(b)
+}
+#[bench]
+fn bytecode_register_become_execute(b: &mut Bencher) {
+    bench_execute::<BytecodeRegisterBecome>(b)
 }
 // Closures
 #[bench]

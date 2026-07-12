@@ -5,3 +5,10 @@ edition = "2024"
 
 [dependencies]
 object = "0.36"
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "sum"
+harness = false

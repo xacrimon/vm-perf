@@ -1,7 +1,5 @@
-#![feature(test)]
-
-extern crate test;
-use test::{black_box, Bencher};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use vm_perf::{
     Bytecode, BytecodeClosures, BytecodeRegister, BytecodeRegisterBecome, ClosureContinuations,
     ClosureStackContinuations, Closures, Expr, RegisterClosures, StackClosures, TapeClosures,
@@ -71,159 +69,86 @@ fn answer() -> i64 {
     10000 * 13
 }
 
-fn bench_compile<V: Vm>(b: &mut Bencher) {
-    let expr = black_box(create_expr());
-
-    b.iter(move || {
-        black_box(V::compile(&expr));
-    });
-}
-
-fn bench_execute<V: Vm>(b: &mut Bencher) {
+fn bench_compile<V: Vm>(c: &mut Criterion, name: &str) {
     let expr = create_expr();
-
-    let program = black_box(V::compile(&expr));
-
-    let args = black_box(create_args());
-
-    b.iter(move || {
-        let res = unsafe { black_box(V::execute(&program, args)) };
-        assert_eq!(res, answer());
+    c.bench_function(name, |b| {
+        b.iter(|| {
+            black_box(V::compile(black_box(&expr)));
+        });
     });
 }
 
-// AST walker
-#[bench]
-fn walker_compile(b: &mut Bencher) {
-    bench_compile::<Walker>(b)
-}
-#[bench]
-fn walker_execute(b: &mut Bencher) {
-    bench_execute::<Walker>(b)
-}
-// Bytecode
-#[bench]
-fn bytecode_compile(b: &mut Bencher) {
-    bench_compile::<Bytecode>(b)
-}
-#[bench]
-fn bytecode_execute(b: &mut Bencher) {
-    bench_execute::<Bytecode>(b)
-}
-// Bytecode register
-#[bench]
-fn bytecode_register_compile(b: &mut Bencher) {
-    bench_compile::<BytecodeRegister>(b)
-}
-#[bench]
-fn bytecode_register_execute(b: &mut Bencher) {
-    bench_execute::<BytecodeRegister>(b)
-}
-// Bytecode register (tail-call dispatch)
-#[bench]
-fn bytecode_register_become_compile(b: &mut Bencher) {
-    bench_compile::<BytecodeRegisterBecome>(b)
-}
-#[bench]
-fn bytecode_register_become_execute(b: &mut Bencher) {
-    bench_execute::<BytecodeRegisterBecome>(b)
-}
-// Template JIT (copy-and-patch)
-#[bench]
-fn template_jit_compile(b: &mut Bencher) {
-    bench_compile::<TemplateJit>(b)
-}
-#[bench]
-fn template_jit_execute(b: &mut Bencher) {
-    bench_execute::<TemplateJit>(b)
-}
-// Closures
-#[bench]
-fn closures_compile(b: &mut Bencher) {
-    bench_compile::<Closures>(b)
-}
-#[bench]
-fn closures_execute(b: &mut Bencher) {
-    bench_execute::<Closures>(b)
-}
-// Stack closures
-#[bench]
-fn stack_closures_compile(b: &mut Bencher) {
-    bench_compile::<StackClosures>(b)
-}
-#[bench]
-fn stack_closures_execute(b: &mut Bencher) {
-    bench_execute::<StackClosures>(b)
-}
-// Tape closures
-#[bench]
-fn tape_closures_compile(b: &mut Bencher) {
-    bench_compile::<TapeClosures>(b)
-}
-#[bench]
-fn tape_closures_execute(b: &mut Bencher) {
-    bench_execute::<TapeClosures>(b)
-}
-// Register closures
-#[bench]
-fn register_closures_compile(b: &mut Bencher) {
-    bench_compile::<RegisterClosures>(b)
-}
-#[bench]
-fn register_closures_execute(b: &mut Bencher) {
-    bench_execute::<RegisterClosures>(b)
-}
-// Bytecode closures
-#[bench]
-fn bytecode_closures_compile(b: &mut Bencher) {
-    bench_compile::<BytecodeClosures>(b)
-}
-#[bench]
-fn bytecode_closures_execute(b: &mut Bencher) {
-    bench_execute::<BytecodeClosures>(b)
-}
-// Tape closures
-#[bench]
-fn tape_continuations_compile(b: &mut Bencher) {
-    bench_compile::<TapeContinuations>(b)
-}
-#[bench]
-fn tape_continuations_execute(b: &mut Bencher) {
-    bench_execute::<TapeContinuations>(b)
-}
-// Closure continuations
-#[bench]
-fn closure_continuations_compile(b: &mut Bencher) {
-    bench_compile::<ClosureContinuations>(b)
-}
-#[bench]
-fn closure_continuations_execute(b: &mut Bencher) {
-    bench_execute::<ClosureContinuations>(b)
-}
-// Closure stack continuations
-#[bench]
-fn closure_stack_continuations_compile(b: &mut Bencher) {
-    bench_compile::<ClosureStackContinuations>(b)
-}
-#[bench]
-fn closure_stack_continuations_execute(b: &mut Bencher) {
-    bench_execute::<ClosureStackContinuations>(b)
+fn bench_execute<V: Vm>(c: &mut Criterion, name: &str) {
+    let expr = create_expr();
+    let program = V::compile(&expr);
+    let args = create_args();
+    c.bench_function(name, |b| {
+        b.iter(|| {
+            let res = unsafe { V::execute(black_box(&program), black_box(args)) };
+            assert_eq!(res, answer());
+            res
+        });
+    });
 }
 
-// Pure Rust controls
-#[bench]
-fn rust_execute(b: &mut Bencher) {
-    let args = black_box(create_args());
-    b.iter(move || {
-        let res = unsafe { rust_impl(args) };
-        assert_eq!(res, answer());
+fn all_benches(c: &mut Criterion) {
+    // AST walker
+    bench_compile::<Walker>(c, "walker_compile");
+    bench_execute::<Walker>(c, "walker_execute");
+    // Bytecode
+    bench_compile::<Bytecode>(c, "bytecode_compile");
+    bench_execute::<Bytecode>(c, "bytecode_execute");
+    // Bytecode register
+    bench_compile::<BytecodeRegister>(c, "bytecode_register_compile");
+    bench_execute::<BytecodeRegister>(c, "bytecode_register_execute");
+    // Bytecode register (tail-call dispatch)
+    bench_compile::<BytecodeRegisterBecome>(c, "bytecode_register_become_compile");
+    bench_execute::<BytecodeRegisterBecome>(c, "bytecode_register_become_execute");
+    // Template JIT (copy-and-patch)
+    bench_compile::<TemplateJit>(c, "template_jit_compile");
+    bench_execute::<TemplateJit>(c, "template_jit_execute");
+    // Closures
+    bench_compile::<Closures>(c, "closures_compile");
+    bench_execute::<Closures>(c, "closures_execute");
+    // Stack closures
+    bench_compile::<StackClosures>(c, "stack_closures_compile");
+    bench_execute::<StackClosures>(c, "stack_closures_execute");
+    // Tape closures
+    bench_compile::<TapeClosures>(c, "tape_closures_compile");
+    bench_execute::<TapeClosures>(c, "tape_closures_execute");
+    // Register closures
+    bench_compile::<RegisterClosures>(c, "register_closures_compile");
+    bench_execute::<RegisterClosures>(c, "register_closures_execute");
+    // Bytecode closures
+    bench_compile::<BytecodeClosures>(c, "bytecode_closures_compile");
+    bench_execute::<BytecodeClosures>(c, "bytecode_closures_execute");
+    // Tape continuations
+    bench_compile::<TapeContinuations>(c, "tape_continuations_compile");
+    bench_execute::<TapeContinuations>(c, "tape_continuations_execute");
+    // Closure continuations
+    bench_compile::<ClosureContinuations>(c, "closure_continuations_compile");
+    bench_execute::<ClosureContinuations>(c, "closure_continuations_execute");
+    // Closure stack continuations
+    bench_compile::<ClosureStackContinuations>(c, "closure_stack_continuations_compile");
+    bench_execute::<ClosureStackContinuations>(c, "closure_stack_continuations_execute");
+
+    // Pure Rust controls
+    let args = create_args();
+    c.bench_function("rust_execute", |b| {
+        b.iter(|| {
+            let res = unsafe { rust_impl(black_box(args)) };
+            assert_eq!(res, answer());
+            res
+        });
+    });
+    c.bench_function("rust_opt_execute", |b| {
+        b.iter(|| {
+            let res = unsafe { rust_impl_opt(black_box(args)) };
+            assert_eq!(res, answer());
+            res
+        });
     });
 }
-#[bench]
-fn rust_opt_execute(b: &mut Bencher) {
-    let args = black_box(create_args());
-    b.iter(move || {
-        let res = unsafe { rust_impl_opt(args) };
-        assert_eq!(res, answer());
-    });
-}
+
+criterion_group!(benches, all_benches);
+criterion_main!(benches);

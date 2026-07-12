@@ -1,5 +1,7 @@
 /*
 TODO:
+breaks with debug assertions or panics, need to compile a seperate object with relocations
+
 function pointers
 remaining branch
 jmp instruction inline
@@ -76,6 +78,30 @@ impl Vm for TemplateJit {
     type Program<'a> = Program;
 
     fn compile(expr: &Expr) -> Self::Program<'_> {
+        // This whole approach depends on each template function's compiled body
+        // containing *only* the instructions it looks like it does. With
+        // debug-assertions on (the `dev` profile's default — NOT the same thing as
+        // opt-level, though the two are usually bundled together), rustc appends an
+        // unreachable-in-practice null-pointer-check panic path to functions that
+        // dereference raw pointers, tacked on right after the template's own tail
+        // call. Our template-boundary detection (`symbol_bounds`: "this function
+        // ends where the next symbol starts") can't distinguish that dead tail from
+        // real code, so it gets copied into the JIT buffer along with everything
+        // else — and because it contains PC-relative instructions (`adrp`, `bl`)
+        // that assume they're still running from their original location, copying
+        // them elsewhere corrupts their target, producing a jump into unmapped
+        // memory. `--release`/`cargo bench` both default `debug-assertions` off,
+        // which eliminates that dead path entirely — this checks for it explicitly
+        // rather than let it silently segfault.
+        assert!(
+            !cfg!(debug_assertions),
+            "TemplateJit requires debug-assertions = false (build with --release, or set \
+             `[profile.dev] debug-assertions = false`): with them on, rustc inserts extra \
+             panic-path code inside the template functions that this JIT's template-boundary \
+             detection can't tell apart from real code, and copying it into the JIT buffer \
+             corrupts PC-relative jumps rather than merely being slower."
+        );
+
         struct Ctx {
             ops: Vec<Op>,
             max_reg: usize,

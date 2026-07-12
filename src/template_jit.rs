@@ -2,10 +2,6 @@
 TODO:
 breaks with debug assertions or panics, need to compile a seperate object with relocations
 
-function pointers
-remaining branch
-jmp instruction inline
-
 pthread_jit_write_protect_np instead of mprotect
 
 dc cvau and ic ivau instead of sys_icache_invalidate

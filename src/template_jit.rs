@@ -187,15 +187,27 @@ impl Vm for TemplateJit {
 fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
     let t = templates();
 
+    // An op's compiled length now depends on its *specific operand values*, not just
+    // its kind: each value hole below `value_hole_skips` a value that fits saves 4
+    // bytes per skipped `movk`. Every template's `base.len` already accounts for
+    // every hole at full (4-instruction) size, so this is just that length minus
+    // whatever this particular instantiation's values let us skip.
     let op_len = |op: &Op| -> usize {
-        match op {
-            Op::LoadImm(..) => t.loadimm.base.len,
-            Op::Move(..) => t.mov.base.len,
-            Op::Add(..) => t.add.base.len,
-            Op::AddImm(..) => t.addimm.base.len,
-            Op::JmpZN(..) => t.jmpzn.base.len,
-            Op::Jmp(..) => t.jmp.base.len,
-            Op::Ret(..) => t.ret.base.len,
+        match *op {
+            Op::LoadImm(dest, imm) => {
+                t.loadimm.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(imm as usize))
+            }
+            Op::Move(dest, src) => t.mov.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(src)),
+            Op::Add(dest, a, b) => {
+                t.add.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(a) + value_hole_skips(b))
+            }
+            Op::AddImm(dest, a, imm) => {
+                t.addimm.base.len
+                    - 4 * (value_hole_skips(dest) + value_hole_skips(a) + value_hole_skips(imm as usize))
+            }
+            Op::JmpZN(reg, _) => t.jmpzn.base.len - 4 * value_hole_skips(reg),
+            Op::Jmp(_) => t.jmp.base.len,
+            Op::Ret(reg) => t.ret.base.len - 4 * value_hole_skips(reg),
         }
     };
 
@@ -242,51 +254,55 @@ fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
 
     for (i, op) in ops.iter().enumerate() {
         let start = offset[i];
-        let len = op_len(op);
-        let dst = &mut buf[start..start + len];
         let dst_addr = base as usize + start;
+        let mut out = Vec::with_capacity(op_len(op));
         match *op {
-            Op::LoadImm(dest, imm) => {
-                dst.copy_from_slice(t.loadimm.base.bytes());
-                apply_value_hole(dst, t.loadimm.dest, dest);
-                apply_value_hole(dst, t.loadimm.imm, imm as usize);
-                apply_branch_hole(dst, t.loadimm.next, dst_addr, addr_of(i + 1));
-            }
-            Op::Move(dest, src) => {
-                dst.copy_from_slice(t.mov.base.bytes());
-                apply_value_hole(dst, t.mov.dest, dest);
-                apply_value_hole(dst, t.mov.src, src);
-                apply_branch_hole(dst, t.mov.next, dst_addr, addr_of(i + 1));
-            }
-            Op::Add(dest, a, b) => {
-                dst.copy_from_slice(t.add.base.bytes());
-                apply_value_hole(dst, t.add.dest, dest);
-                apply_value_hole(dst, t.add.a, a);
-                apply_value_hole(dst, t.add.b, b);
-                apply_branch_hole(dst, t.add.next, dst_addr, addr_of(i + 1));
-            }
-            Op::AddImm(dest, a, imm) => {
-                dst.copy_from_slice(t.addimm.base.bytes());
-                apply_value_hole(dst, t.addimm.dest, dest);
-                apply_value_hole(dst, t.addimm.a, a);
-                apply_value_hole(dst, t.addimm.imm, imm as usize);
-                apply_branch_hole(dst, t.addimm.next, dst_addr, addr_of(i + 1));
-            }
-            Op::JmpZN(reg, target) => {
-                dst.copy_from_slice(t.jmpzn.base.bytes());
-                apply_value_hole(dst, t.jmpzn.reg, reg);
-                apply_branch_hole(dst, t.jmpzn.taken, dst_addr, addr_of(target));
-                apply_branch_hole(dst, t.jmpzn.fallthrough, dst_addr, addr_of(i + 1));
-            }
-            Op::Jmp(target) => {
-                dst.copy_from_slice(t.jmp.base.bytes());
-                apply_branch_hole(dst, t.jmp.target, dst_addr, addr_of(target));
-            }
-            Op::Ret(reg) => {
-                dst.copy_from_slice(t.ret.base.bytes());
-                apply_value_hole(dst, t.ret.reg, reg);
-            }
+            Op::LoadImm(dest, imm) => emit_template(
+                &mut out,
+                t.loadimm.base.bytes(),
+                &[(t.loadimm.dest, dest), (t.loadimm.imm, imm as usize)],
+                &[(t.loadimm.next, addr_of(i + 1))],
+                dst_addr,
+            ),
+            Op::Move(dest, src) => emit_template(
+                &mut out,
+                t.mov.base.bytes(),
+                &[(t.mov.dest, dest), (t.mov.src, src)],
+                &[(t.mov.next, addr_of(i + 1))],
+                dst_addr,
+            ),
+            Op::Add(dest, a, b) => emit_template(
+                &mut out,
+                t.add.base.bytes(),
+                &[(t.add.dest, dest), (t.add.a, a), (t.add.b, b)],
+                &[(t.add.next, addr_of(i + 1))],
+                dst_addr,
+            ),
+            Op::AddImm(dest, a, imm) => emit_template(
+                &mut out,
+                t.addimm.base.bytes(),
+                &[(t.addimm.dest, dest), (t.addimm.a, a), (t.addimm.imm, imm as usize)],
+                &[(t.addimm.next, addr_of(i + 1))],
+                dst_addr,
+            ),
+            Op::JmpZN(reg, target) => emit_template(
+                &mut out,
+                t.jmpzn.base.bytes(),
+                &[(t.jmpzn.reg, reg)],
+                &[(t.jmpzn.taken, addr_of(target)), (t.jmpzn.fallthrough, addr_of(i + 1))],
+                dst_addr,
+            ),
+            Op::Jmp(target) => emit_template(
+                &mut out,
+                t.jmp.base.bytes(),
+                &[],
+                &[(t.jmp.target, addr_of(target))],
+                dst_addr,
+            ),
+            Op::Ret(reg) => emit_template(&mut out, t.ret.base.bytes(), &[(t.ret.reg, reg)], &[], dst_addr),
         }
+        debug_assert_eq!(out.len(), op_len(op), "op {i} size mismatch between plan and emit");
+        buf[start..start + out.len()].copy_from_slice(&out);
     }
 
     let rc = unsafe { mprotect(map, total, PROT_READ | PROT_EXEC) };
@@ -379,22 +395,26 @@ fn find_value_hole(bytes: &[u8], sentinel: usize) -> usize {
     panic!("value hole not found for sentinel {sentinel:#x}");
 }
 
-// AArch64 `nop`: `0xD503201F`.
-const NOP: u32 = 0xD503_201F;
-
 // The template is always compiled as `movz`+`movk`x3, sized for a worst-case 64-bit
 // value — but most hole values in practice are small (register indices) or small
 // negative numbers (`Litr(-1)` and friends), meaning most of the four 16-bit chunks
 // are either all-zero or all-one. `movz` implicitly zero-fills every bit its `movk`s
 // don't touch, and `movn` (same encoding, differing only in bit 30 — verified against
 // a hand-assembled `movz`/`movn` pair) implicitly one-fills instead. So: pick
-// whichever base instruction lets more of the three `movk`s collapse into a `nop`
-// (same instruction count, but no register dependency and no execution port cost —
-// `movk #0x0,...` and an actual `nop` are not the same thing to the CPU): a chunk
-// that already matches the base's implicit fill value needs no `movk` at all.
-fn apply_value_hole(buf: &mut [u8], offset: usize, value: usize) {
+// whichever base instruction lets more of the three `movk`s become unnecessary, and
+// — rather than merely `nop`-ing those out — drop their bytes entirely, shrinking the
+// op. `value_hole_skips` (used to size each op *before* linking, since jump targets
+// need every earlier op's final size first) and `emit_value_hole` (which actually
+// writes the surviving instructions) must always agree on which ones are droppable.
+fn value_hole_skips(value: usize) -> usize {
     let chunks: [u16; 4] = std::array::from_fn(|k| (value >> (k * 16)) as u16);
+    let zero_skippable = chunks[1..].iter().filter(|&&c| c == 0x0000).count();
+    let ones_skippable = chunks[1..].iter().filter(|&&c| c == 0xFFFF).count();
+    zero_skippable.max(ones_skippable)
+}
 
+fn emit_value_hole(out: &mut Vec<u8>, slot: &[u8], value: usize) {
+    let chunks: [u16; 4] = std::array::from_fn(|k| (value >> (k * 16)) as u16);
     let zero_skippable = chunks[1..].iter().filter(|&&c| c == 0x0000).count();
     let ones_skippable = chunks[1..].iter().filter(|&&c| c == 0xFFFF).count();
     let use_movn = ones_skippable > zero_skippable;
@@ -402,24 +422,22 @@ fn apply_value_hole(buf: &mut [u8], offset: usize, value: usize) {
     // `movn Rd, #imm16` computes `NOT(zero_extend(imm16))`, so to land on `chunks[0]`
     // in the low 16 bits when using it as the base, the encoded immediate has to be
     // its complement.
-    let base_word = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+    let base_word = u32::from_le_bytes(slot[0..4].try_into().unwrap());
     let base_imm = if use_movn { !chunks[0] } else { chunks[0] };
     let mut new_base = (base_word & !(0xFFFFu32 << 5)) | ((base_imm as u32) << 5);
     if use_movn {
         new_base &= !(1 << 30); // movz -> movn: clear opc's high bit
     }
-    buf[offset..offset + 4].copy_from_slice(&new_base.to_le_bytes());
+    out.extend_from_slice(&new_base.to_le_bytes());
 
     let skip_value = if use_movn { 0xFFFFu16 } else { 0x0000u16 };
     for k in 1..4 {
-        let off = offset + k * 4;
         if chunks[k] == skip_value {
-            buf[off..off + 4].copy_from_slice(&NOP.to_le_bytes());
-        } else {
-            let word = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
-            let patched = (word & !(0xFFFFu32 << 5)) | ((chunks[k] as u32) << 5);
-            buf[off..off + 4].copy_from_slice(&patched.to_le_bytes());
+            continue; // drop this movk's 4 bytes entirely
         }
+        let word = u32::from_le_bytes(slot[k * 4..k * 4 + 4].try_into().unwrap());
+        let patched = (word & !(0xFFFFu32 << 5)) | ((chunks[k] as u32) << 5);
+        out.extend_from_slice(&patched.to_le_bytes());
     }
 }
 
@@ -451,14 +469,59 @@ fn find_branch_hole(bytes: &[u8], template_live_addr: usize, marker_live_addr: u
     panic!("branch hole not found for marker {marker_live_addr:#x}");
 }
 
-fn apply_branch_hole(buf: &mut [u8], offset: usize, op_base_addr: usize, target_addr: usize) {
-    let branch_addr = op_base_addr + offset;
-    let delta = target_addr as i64 - branch_addr as i64;
+fn emit_branch_hole(out: &mut Vec<u8>, this_instr_addr: usize, target_addr: usize) {
+    let delta = target_addr as i64 - this_instr_addr as i64;
     debug_assert!(delta % 4 == 0, "branch target not instruction-aligned");
     let word_offset = delta / 4;
     debug_assert!((-(1i64 << 25)..(1i64 << 25)).contains(&word_offset), "branch out of AArch64's ±128MB range");
     let encoded = 0x1400_0000u32 | (word_offset as u32 & 0x03FF_FFFF);
-    buf[offset..offset + 4].copy_from_slice(&encoded.to_le_bytes());
+    out.extend_from_slice(&encoded.to_le_bytes());
+}
+
+// Copies one template into `out`, applying every value hole (`emit_value_hole`, which
+// may drop bytes) and branch hole (`emit_branch_hole`, always exactly one instruction)
+// in place, and copying everything else through unchanged. `value_holes`/
+// `branch_holes` are `(offset within the *original* template, value/absolute target)`
+// pairs — offsets don't need to be pre-sorted, `emit_template` interleaves them with
+// the fixed code between them by walking the template in address order.
+fn emit_template(
+    out: &mut Vec<u8>,
+    template: &[u8],
+    value_holes: &[(usize, usize)],
+    branch_holes: &[(usize, usize)],
+    op_base_addr: usize,
+) {
+    enum Hole {
+        Value(usize),
+        Branch(usize),
+    }
+    let mut holes: Vec<(usize, Hole)> = value_holes
+        .iter()
+        .map(|&(off, v)| (off, Hole::Value(v)))
+        .chain(branch_holes.iter().map(|&(off, t)| (off, Hole::Branch(t))))
+        .collect();
+    holes.sort_by_key(|&(off, _)| off);
+
+    let mut i = 0;
+    let mut hi = 0;
+    while i < template.len() {
+        if hi < holes.len() && holes[hi].0 == i {
+            match holes[hi].1 {
+                Hole::Value(value) => {
+                    emit_value_hole(out, &template[i..i + 16], value);
+                    i += 16;
+                }
+                Hole::Branch(target) => {
+                    emit_branch_hole(out, op_base_addr + out.len(), target);
+                    i += 4;
+                }
+            }
+            hi += 1;
+        } else {
+            out.extend_from_slice(&template[i..i + 4]);
+            i += 4;
+        }
+    }
 }
 
 struct TemplateInfo {

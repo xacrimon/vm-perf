@@ -1,3 +1,17 @@
+/*
+TODO:
+function pointers
+remaining branch
+jmp instruction inline
+
+pthread_jit_write_protect_np instead of mprotect
+
+dc cvau and ic ivau instead of sys_icache_invalidate
+requires checking CTR_EL0 for cache line size
+
+x86
+*/
+
 use super::*;
 use object::{Object, ObjectSymbol};
 use std::ffi::c_void;
@@ -192,30 +206,49 @@ fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
     // bytes per skipped `movk`. Every template's `base.len` already accounts for
     // every hole at full (4-instruction) size, so this is just that length minus
     // whatever this particular instantiation's values let us skip.
-    let op_len = |op: &Op| -> usize {
+    //
+    // `LoadImm`/`Move`/`Add`/`AddImm`'s single "next" branch always targets `i + 1`
+    // — `compile_inner` only ever appends ops sequentially, so this holds for every
+    // instantiation, not just this expression — meaning it's *always* jumping to the
+    // instruction that would execute next anyway. Dropping it entirely (not even a
+    // `nop`) is exactly the "no unnecessary jumps for straight-line code" idea from
+    // the copy-and-patch literature. `Jmp`'s target is a real value (loop back-edges
+    // point backward), so it only qualifies in the same, generically-checked way.
+    // `JmpZN`'s two branches are deliberately excluded: its `cmp`/`b.lt` carries a
+    // hardcoded *local* offset assuming the fallthrough branch's 4 bytes are present,
+    // so dropping either branch would need that offset re-derived too — a separate,
+    // riskier change not bundled in here.
+    let op_len = |i: usize, op: &Op| -> usize {
         match *op {
             Op::LoadImm(dest, imm) => {
-                t.loadimm.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(imm as usize))
+                t.loadimm.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(imm as usize)) - 4
             }
-            Op::Move(dest, src) => t.mov.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(src)),
+            Op::Move(dest, src) => t.mov.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(src)) - 4,
             Op::Add(dest, a, b) => {
-                t.add.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(a) + value_hole_skips(b))
+                t.add.base.len - 4 * (value_hole_skips(dest) + value_hole_skips(a) + value_hole_skips(b)) - 4
             }
             Op::AddImm(dest, a, imm) => {
                 t.addimm.base.len
                     - 4 * (value_hole_skips(dest) + value_hole_skips(a) + value_hole_skips(imm as usize))
+                    - 4
             }
             Op::JmpZN(reg, _) => t.jmpzn.base.len - 4 * value_hole_skips(reg),
-            Op::Jmp(_) => t.jmp.base.len,
+            Op::Jmp(target) => {
+                if target == i + 1 {
+                    t.jmp.base.len - 4
+                } else {
+                    t.jmp.base.len
+                }
+            }
             Op::Ret(reg) => t.ret.base.len - 4 * value_hole_skips(reg),
         }
     };
 
     let mut offset = Vec::with_capacity(ops.len());
     let mut cursor = 0usize;
-    for op in ops {
+    for (i, op) in ops.iter().enumerate() {
         offset.push(cursor);
-        cursor += op_len(op);
+        cursor += op_len(i, op);
     }
     let total = cursor;
 
@@ -255,34 +288,38 @@ fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
     for (i, op) in ops.iter().enumerate() {
         let start = offset[i];
         let dst_addr = base as usize + start;
-        let mut out = Vec::with_capacity(op_len(op));
+        let mut out = Vec::with_capacity(op_len(i, op));
         match *op {
             Op::LoadImm(dest, imm) => emit_template(
                 &mut out,
                 t.loadimm.base.bytes(),
                 &[(t.loadimm.dest, dest), (t.loadimm.imm, imm as usize)],
-                &[(t.loadimm.next, addr_of(i + 1))],
+                &[],
+                &[t.loadimm.next],
                 dst_addr,
             ),
             Op::Move(dest, src) => emit_template(
                 &mut out,
                 t.mov.base.bytes(),
                 &[(t.mov.dest, dest), (t.mov.src, src)],
-                &[(t.mov.next, addr_of(i + 1))],
+                &[],
+                &[t.mov.next],
                 dst_addr,
             ),
             Op::Add(dest, a, b) => emit_template(
                 &mut out,
                 t.add.base.bytes(),
                 &[(t.add.dest, dest), (t.add.a, a), (t.add.b, b)],
-                &[(t.add.next, addr_of(i + 1))],
+                &[],
+                &[t.add.next],
                 dst_addr,
             ),
             Op::AddImm(dest, a, imm) => emit_template(
                 &mut out,
                 t.addimm.base.bytes(),
                 &[(t.addimm.dest, dest), (t.addimm.a, a), (t.addimm.imm, imm as usize)],
-                &[(t.addimm.next, addr_of(i + 1))],
+                &[],
+                &[t.addimm.next],
                 dst_addr,
             ),
             Op::JmpZN(reg, target) => emit_template(
@@ -290,18 +327,21 @@ fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
                 t.jmpzn.base.bytes(),
                 &[(t.jmpzn.reg, reg)],
                 &[(t.jmpzn.taken, addr_of(target)), (t.jmpzn.fallthrough, addr_of(i + 1))],
-                dst_addr,
-            ),
-            Op::Jmp(target) => emit_template(
-                &mut out,
-                t.jmp.base.bytes(),
                 &[],
-                &[(t.jmp.target, addr_of(target))],
                 dst_addr,
             ),
-            Op::Ret(reg) => emit_template(&mut out, t.ret.base.bytes(), &[(t.ret.reg, reg)], &[], dst_addr),
+            Op::Jmp(target) => {
+                if target == i + 1 {
+                    emit_template(&mut out, t.jmp.base.bytes(), &[], &[], &[t.jmp.target], dst_addr)
+                } else {
+                    emit_template(&mut out, t.jmp.base.bytes(), &[], &[(t.jmp.target, addr_of(target))], &[], dst_addr)
+                }
+            }
+            Op::Ret(reg) => {
+                emit_template(&mut out, t.ret.base.bytes(), &[(t.ret.reg, reg)], &[], &[], dst_addr)
+            }
         }
-        debug_assert_eq!(out.len(), op_len(op), "op {i} size mismatch between plan and emit");
+        debug_assert_eq!(out.len(), op_len(i, op), "op {i} size mismatch between plan and emit");
         buf[start..start + out.len()].copy_from_slice(&out);
     }
 
@@ -479,26 +519,31 @@ fn emit_branch_hole(out: &mut Vec<u8>, this_instr_addr: usize, target_addr: usiz
 }
 
 // Copies one template into `out`, applying every value hole (`emit_value_hole`, which
-// may drop bytes) and branch hole (`emit_branch_hole`, always exactly one instruction)
-// in place, and copying everything else through unchanged. `value_holes`/
-// `branch_holes` are `(offset within the *original* template, value/absolute target)`
-// pairs — offsets don't need to be pre-sorted, `emit_template` interleaves them with
-// the fixed code between them by walking the template in address order.
+// may drop bytes), branch hole (`emit_branch_hole`, always exactly one instruction),
+// and dropped hole (a branch to what would be the very next instruction anyway —
+// omitted entirely, 0 bytes, not even a `nop`) in place, copying everything else
+// through unchanged. `value_holes`/`branch_holes` are `(offset within the *original*
+// template, value/absolute target)` pairs, `dropped_holes` is just offsets — none
+// need to be pre-sorted, `emit_template` interleaves them with the fixed code between
+// them by walking the template in address order.
 fn emit_template(
     out: &mut Vec<u8>,
     template: &[u8],
     value_holes: &[(usize, usize)],
     branch_holes: &[(usize, usize)],
+    dropped_holes: &[usize],
     op_base_addr: usize,
 ) {
     enum Hole {
         Value(usize),
         Branch(usize),
+        Dropped,
     }
     let mut holes: Vec<(usize, Hole)> = value_holes
         .iter()
         .map(|&(off, v)| (off, Hole::Value(v)))
         .chain(branch_holes.iter().map(|&(off, t)| (off, Hole::Branch(t))))
+        .chain(dropped_holes.iter().map(|&off| (off, Hole::Dropped)))
         .collect();
     holes.sort_by_key(|&(off, _)| off);
 
@@ -513,6 +558,9 @@ fn emit_template(
                 }
                 Hole::Branch(target) => {
                     emit_branch_hole(out, op_base_addr + out.len(), target);
+                    i += 4;
+                }
+                Hole::Dropped => {
                     i += 4;
                 }
             }

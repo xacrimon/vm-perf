@@ -29,6 +29,20 @@ pub struct Program {
     len: usize,
     num_regs: usize,
     n_args: usize,
+    // (byte offset, human-readable description) per op, for disassembly/inspection.
+    labels: Vec<(usize, String)>,
+}
+
+impl Program {
+    /// The compiled native code, for disassembly/inspection.
+    pub fn code(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.base, self.len) }
+    }
+
+    /// (byte offset, description) for each compiled instruction's start, in order.
+    pub fn labels(&self) -> &[(usize, String)] {
+        &self.labels
+    }
 }
 
 // SAFETY: `base` points at a private JIT-owned executable mapping; nothing else
@@ -209,6 +223,23 @@ fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
 
     let addr_of = |target: usize| -> usize { base as usize + offset[target] };
 
+    let labels: Vec<(usize, String)> = ops
+        .iter()
+        .enumerate()
+        .map(|(i, op)| {
+            let desc = match *op {
+                Op::LoadImm(dest, imm) => format!("i{i:03}_loadimm_r{dest}_{imm}"),
+                Op::Move(dest, src) => format!("i{i:03}_move_r{dest}_r{src}"),
+                Op::Add(dest, a, b) => format!("i{i:03}_add_r{dest}_r{a}_r{b}"),
+                Op::AddImm(dest, a, imm) => format!("i{i:03}_addimm_r{dest}_r{a}_{imm}"),
+                Op::JmpZN(reg, target) => format!("i{i:03}_jmpzn_r{reg}_to_i{target:03}"),
+                Op::Jmp(target) => format!("i{i:03}_jmp_to_i{target:03}"),
+                Op::Ret(reg) => format!("i{i:03}_ret_r{reg}"),
+            };
+            (offset[i], desc)
+        })
+        .collect();
+
     for (i, op) in ops.iter().enumerate() {
         let start = offset[i];
         let len = op_len(op);
@@ -269,6 +300,7 @@ fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
         len: total,
         num_regs,
         n_args,
+        labels,
     }
 }
 
@@ -347,13 +379,47 @@ fn find_value_hole(bytes: &[u8], sentinel: usize) -> usize {
     panic!("value hole not found for sentinel {sentinel:#x}");
 }
 
+// AArch64 `nop`: `0xD503201F`.
+const NOP: u32 = 0xD503_201F;
+
+// The template is always compiled as `movz`+`movk`x3, sized for a worst-case 64-bit
+// value — but most hole values in practice are small (register indices) or small
+// negative numbers (`Litr(-1)` and friends), meaning most of the four 16-bit chunks
+// are either all-zero or all-one. `movz` implicitly zero-fills every bit its `movk`s
+// don't touch, and `movn` (same encoding, differing only in bit 30 — verified against
+// a hand-assembled `movz`/`movn` pair) implicitly one-fills instead. So: pick
+// whichever base instruction lets more of the three `movk`s collapse into a `nop`
+// (same instruction count, but no register dependency and no execution port cost —
+// `movk #0x0,...` and an actual `nop` are not the same thing to the CPU): a chunk
+// that already matches the base's implicit fill value needs no `movk` at all.
 fn apply_value_hole(buf: &mut [u8], offset: usize, value: usize) {
-    let new_chunks: [u16; 4] = std::array::from_fn(|k| (value >> (k * 16)) as u16);
-    for k in 0..4 {
+    let chunks: [u16; 4] = std::array::from_fn(|k| (value >> (k * 16)) as u16);
+
+    let zero_skippable = chunks[1..].iter().filter(|&&c| c == 0x0000).count();
+    let ones_skippable = chunks[1..].iter().filter(|&&c| c == 0xFFFF).count();
+    let use_movn = ones_skippable > zero_skippable;
+
+    // `movn Rd, #imm16` computes `NOT(zero_extend(imm16))`, so to land on `chunks[0]`
+    // in the low 16 bits when using it as the base, the encoded immediate has to be
+    // its complement.
+    let base_word = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
+    let base_imm = if use_movn { !chunks[0] } else { chunks[0] };
+    let mut new_base = (base_word & !(0xFFFFu32 << 5)) | ((base_imm as u32) << 5);
+    if use_movn {
+        new_base &= !(1 << 30); // movz -> movn: clear opc's high bit
+    }
+    buf[offset..offset + 4].copy_from_slice(&new_base.to_le_bytes());
+
+    let skip_value = if use_movn { 0xFFFFu16 } else { 0x0000u16 };
+    for k in 1..4 {
         let off = offset + k * 4;
-        let word = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
-        let patched = (word & !(0xFFFFu32 << 5)) | ((new_chunks[k] as u32) << 5);
-        buf[off..off + 4].copy_from_slice(&patched.to_le_bytes());
+        if chunks[k] == skip_value {
+            buf[off..off + 4].copy_from_slice(&NOP.to_le_bytes());
+        } else {
+            let word = u32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
+            let patched = (word & !(0xFFFFu32 << 5)) | ((chunks[k] as u32) << 5);
+            buf[off..off + 4].copy_from_slice(&patched.to_le_bytes());
+        }
     }
 }
 

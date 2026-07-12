@@ -274,10 +274,10 @@ fn link(ops: &[Op], num_regs: usize, n_args: usize) -> Program {
 
 // Register-index/immediate holes are 64-bit sentinel constants, chosen so every
 // 16-bit chunk is non-zero (so LLVM always materializes them as 4 back-to-back
-// `movz`+`movk` instructions rather than skipping a zero chunk — see `chunks_ok`),
-// that we deliberately prevent the optimizer from folding with `black_box`. We locate
-// each one's 4-instruction sequence once per template at startup (`find_value_hole`)
-// and thereafter just overwrite the cached offset's 4 immediate fields directly.
+// `movz`+`movk` instructions rather than skipping a zero chunk — see `chunks_ok`). We
+// locate each one's 4-instruction sequence once per template at startup
+// (`find_value_hole`) and thereafter just overwrite the cached offset's 4 immediate
+// fields directly.
 const HOLE_1: usize = 0x1111_2222_3333_4445;
 const HOLE_2: usize = 0x5555_6666_7777_8889;
 const HOLE_3: usize = 0x9999_aaaa_bbbb_cccd;
@@ -298,6 +298,39 @@ const _: () = assert!(chunks_ok(HOLE_1));
 const _: () = assert!(chunks_ok(HOLE_2));
 const _: () = assert!(chunks_ok(HOLE_3));
 const _: () = assert!(chunks_ok(HOLE_IMM));
+
+const fn hole_chunk(v: usize, k: usize) -> u16 {
+    (v >> (k * 16)) as u16
+}
+
+// Materializes a hole sentinel into a register via a hand-written `movz`+`movk`
+// sequence instead of `std::hint::black_box(CONST)`. `black_box` works (it also
+// prevents the optimizer from const-folding the value away) but implements its
+// optimization barrier as a memory round-trip, forcing every hole through a spill to
+// the stack and back — real overhead on every single instruction of the compiled
+// program. Hand-written `asm!` gets the same "opaque to the optimizer" property for
+// free (inline asm is never analyzed across its boundary) while letting the value
+// stay in whatever register the allocator already picked, with `options(nomem,
+// nostack, preserves_flags)` telling the compiler it's safe to skip even the usual
+// conservative frame setup around an asm block.
+macro_rules! load_hole {
+    ($sentinel:expr) => {{
+        let value: usize;
+        std::arch::asm!(
+            "movz {0}, #{c0}",
+            "movk {0}, #{c1}, lsl #16",
+            "movk {0}, #{c2}, lsl #32",
+            "movk {0}, #{c3}, lsl #48",
+            out(reg) value,
+            c0 = const hole_chunk($sentinel, 0),
+            c1 = const hole_chunk($sentinel, 1),
+            c2 = const hole_chunk($sentinel, 2),
+            c3 = const hole_chunk($sentinel, 3),
+            options(nomem, nostack, preserves_flags),
+        );
+        value
+    }};
+}
 
 fn find_value_hole(bytes: &[u8], sentinel: usize) -> usize {
     let chunks: [u16; 4] = std::array::from_fn(|k| (sentinel >> (k * 16)) as u16);
@@ -625,8 +658,8 @@ pub unsafe extern "rust-preserve-none" fn tj_marker2(regs: *mut i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "rust-preserve-none" fn tj_loadimm(regs: *mut i64) -> i64 {
     unsafe {
-        let dest = std::hint::black_box(HOLE_1);
-        let imm = std::hint::black_box(HOLE_IMM) as i64;
+        let dest = load_hole!(HOLE_1);
+        let imm = load_hole!(HOLE_IMM) as i64;
         *regs.add(dest) = imm;
         become tj_marker(regs)
     }
@@ -636,8 +669,8 @@ pub unsafe extern "rust-preserve-none" fn tj_loadimm(regs: *mut i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "rust-preserve-none" fn tj_move(regs: *mut i64) -> i64 {
     unsafe {
-        let dest = std::hint::black_box(HOLE_1);
-        let src = std::hint::black_box(HOLE_2);
+        let dest = load_hole!(HOLE_1);
+        let src = load_hole!(HOLE_2);
         *regs.add(dest) = *regs.add(src);
         become tj_marker(regs)
     }
@@ -647,9 +680,9 @@ pub unsafe extern "rust-preserve-none" fn tj_move(regs: *mut i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "rust-preserve-none" fn tj_add(regs: *mut i64) -> i64 {
     unsafe {
-        let dest = std::hint::black_box(HOLE_1);
-        let a = std::hint::black_box(HOLE_2);
-        let b = std::hint::black_box(HOLE_3);
+        let dest = load_hole!(HOLE_1);
+        let a = load_hole!(HOLE_2);
+        let b = load_hole!(HOLE_3);
         *regs.add(dest) = *regs.add(a) + *regs.add(b);
         become tj_marker(regs)
     }
@@ -659,9 +692,9 @@ pub unsafe extern "rust-preserve-none" fn tj_add(regs: *mut i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "rust-preserve-none" fn tj_addimm(regs: *mut i64) -> i64 {
     unsafe {
-        let dest = std::hint::black_box(HOLE_1);
-        let a = std::hint::black_box(HOLE_2);
-        let imm = std::hint::black_box(HOLE_IMM) as i64;
+        let dest = load_hole!(HOLE_1);
+        let a = load_hole!(HOLE_2);
+        let imm = load_hole!(HOLE_IMM) as i64;
         *regs.add(dest) = *regs.add(a) + imm;
         become tj_marker(regs)
     }
@@ -671,7 +704,7 @@ pub unsafe extern "rust-preserve-none" fn tj_addimm(regs: *mut i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "rust-preserve-none" fn tj_jmpzn(regs: *mut i64) -> i64 {
     unsafe {
-        let reg = std::hint::black_box(HOLE_1);
+        let reg = load_hole!(HOLE_1);
         let cond = *regs.add(reg);
         if cond <= 0 {
             become tj_marker(regs)
@@ -691,7 +724,7 @@ pub unsafe extern "rust-preserve-none" fn tj_jmp(regs: *mut i64) -> i64 {
 #[unsafe(no_mangle)]
 pub unsafe extern "rust-preserve-none" fn tj_ret(regs: *mut i64) -> i64 {
     unsafe {
-        let reg = std::hint::black_box(HOLE_1);
+        let reg = load_hole!(HOLE_1);
         *regs.add(reg)
     }
 }

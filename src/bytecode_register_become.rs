@@ -5,7 +5,6 @@ pub struct BytecodeRegister;
 
 enum Op {
     LoadImm(usize, i64),
-    LoadArg(usize, usize),
     Move(usize, usize),
     Add(usize, usize, usize),
     AddImm(usize, usize, i64),
@@ -15,16 +14,14 @@ enum Op {
 }
 
 const OP_LOADIMM: u8 = 0;
-const OP_LOADARG: u8 = 1;
-const OP_MOVE: u8 = 2;
-const OP_ADD: u8 = 3;
-const OP_ADDIMM: u8 = 4;
-const OP_JMPZN: u8 = 5;
-const OP_JMP: u8 = 6;
-const OP_RET: u8 = 7;
+const OP_MOVE: u8 = 1;
+const OP_ADD: u8 = 2;
+const OP_ADDIMM: u8 = 3;
+const OP_JMPZN: u8 = 4;
+const OP_JMP: u8 = 5;
+const OP_RET: u8 = 6;
 
 const LOADIMM_SIZE: usize = 1 + 1 + 8;
-const LOADARG_SIZE: usize = 1 + 1 + 1;
 const MOVE_SIZE: usize = 1 + 1 + 1;
 const ADD_SIZE: usize = 1 + 1 + 1 + 1;
 const ADDIMM_SIZE: usize = 1 + 1 + 1 + 8;
@@ -35,11 +32,12 @@ const RET_SIZE: usize = 1 + 1;
 pub struct Program {
     code: Box<[u8]>,
     num_regs: usize,
+    n_args: usize,
 }
 
 impl fmt::Display for Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "; num_regs = {}", self.num_regs)?;
+        writeln!(f, "; num_regs = {}, n_args = {}", self.num_regs, self.n_args)?;
         let code = &self.code;
         let mut i = 0usize;
         while i < code.len() {
@@ -50,12 +48,6 @@ impl fmt::Display for Program {
                     let imm = i64::from_ne_bytes(code[i + 2..i + 10].try_into().unwrap());
                     writeln!(f, "loadimm  r{dest}, {imm}")?;
                     i += LOADIMM_SIZE;
-                }
-                OP_LOADARG => {
-                    let dest = code[i + 1];
-                    let idx = code[i + 2];
-                    writeln!(f, "loadarg  r{dest}, args[{idx}]")?;
-                    i += LOADARG_SIZE;
                 }
                 OP_MOVE => {
                     let dest = code[i + 1];
@@ -117,6 +109,17 @@ impl Vm for BytecodeRegister {
             }
         }
 
+        fn argmax(expr: &Expr) -> usize {
+            match expr {
+                Expr::Litr(_) | Expr::Get(_) => 0,
+                Expr::Arg(i) => i + 1,
+                Expr::Add(x, y) | Expr::Let(x, y) | Expr::While(x, y) | Expr::Then(x, y) => {
+                    argmax(x).max(argmax(y))
+                }
+                Expr::Set(_, x) => argmax(x),
+            }
+        }
+
         fn compile_inner(ctx: &mut Ctx, expr: &Expr, depth: usize, next_reg: usize) -> (usize, bool) {
             match expr {
                 Expr::Litr(x) => {
@@ -124,11 +127,7 @@ impl Vm for BytecodeRegister {
                     ctx.touch(next_reg);
                     (next_reg, true)
                 }
-                Expr::Arg(idx) => {
-                    ctx.ops.push(Op::LoadArg(next_reg, *idx));
-                    ctx.touch(next_reg);
-                    (next_reg, true)
-                }
+                Expr::Arg(idx) => (*idx, false),
                 Expr::Get(local) => (depth - 1 - local, false),
                 Expr::Add(x, y) => {
                     let dest = next_reg;
@@ -157,10 +156,6 @@ impl Vm for BytecodeRegister {
                     match &**rhs {
                         Expr::Litr(x) => {
                             ctx.ops.push(Op::LoadImm(target, *x));
-                            ctx.touch(target);
-                        }
-                        Expr::Arg(idx) => {
-                            ctx.ops.push(Op::LoadArg(target, *idx));
                             ctx.touch(target);
                         }
                         Expr::Add(x, y) => {
@@ -202,12 +197,14 @@ impl Vm for BytecodeRegister {
             }
         }
 
+        let n_args = argmax(expr);
+
         let mut ctx = Ctx {
             ops: Vec::new(),
             max_reg: 0,
         };
 
-        let (result, _) = compile_inner(&mut ctx, expr, 0, 0);
+        let (result, _) = compile_inner(&mut ctx, expr, n_args, n_args);
         ctx.ops.push(Op::Ret(result));
 
         #[inline(always)]
@@ -219,7 +216,6 @@ impl Vm for BytecodeRegister {
         fn op_size(op: &Op) -> usize {
             match op {
                 Op::LoadImm(..) => LOADIMM_SIZE,
-                Op::LoadArg(..) => LOADARG_SIZE,
                 Op::Move(..) => MOVE_SIZE,
                 Op::Add(..) => ADD_SIZE,
                 Op::AddImm(..) => ADDIMM_SIZE,
@@ -243,11 +239,6 @@ impl Vm for BytecodeRegister {
                     code.push(OP_LOADIMM);
                     code.push(reg(dest));
                     code.extend_from_slice(&x.to_ne_bytes());
-                }
-                Op::LoadArg(dest, idx) => {
-                    code.push(OP_LOADARG);
-                    code.push(reg(dest));
-                    code.push(reg(idx));
                 }
                 Op::Move(dest, src) => {
                     code.push(OP_MOVE);
@@ -288,21 +279,23 @@ impl Vm for BytecodeRegister {
 
         Program {
             code: code.into_boxed_slice(),
-            num_regs: ctx.max_reg.max(1),
+            num_regs: ctx.max_reg.max(n_args).max(1),
+            n_args,
         }
     }
 
     unsafe fn execute(prog: &Self::Program<'_>, args: &[i64]) -> i64 {
         let mut regs = vec![0i64; prog.num_regs];
-        dispatch(regs.as_mut_ptr(), args.as_ptr(), prog.code.as_ptr())
+        debug_assert!(args.len() >= prog.n_args, "not enough arguments");
+        regs[..prog.n_args].copy_from_slice(&args[..prog.n_args]);
+        dispatch(regs.as_mut_ptr(), prog.code.as_ptr())
     }
 }
 
-type OpFn = extern "rust-preserve-none" fn(*mut i64, *const i64, *const u8) -> i64;
+type OpFn = extern "rust-preserve-none" fn(*mut i64, *const u8) -> i64;
 
-static DISPATCH_TABLE: [OpFn; 8] = [
+static DISPATCH_TABLE: [OpFn; 7] = [
     op_loadimm,
-    op_loadarg,
     op_move,
     op_add,
     op_addimm,
@@ -312,47 +305,36 @@ static DISPATCH_TABLE: [OpFn; 8] = [
 ];
 
 #[inline(always)]
-extern "rust-preserve-none" fn dispatch(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn dispatch(regs: *mut i64, ip: *const u8) -> i64 {
     let opcode = unsafe { *ip };
     let f = unsafe { *DISPATCH_TABLE.get_unchecked(opcode as usize) };
-    become f(regs, args, ip)
+    become f(regs, ip)
 }
 
 #[inline(never)]
-extern "rust-preserve-none" fn op_loadimm(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn op_loadimm(regs: *mut i64, ip: *const u8) -> i64 {
     let dest = unsafe { *ip.add(1) };
     let imm = unsafe { ip.add(2).cast::<i64>().read_unaligned() };
     unsafe {
         *regs.add(dest as usize) = imm;
     }
     let next = unsafe { ip.add(LOADIMM_SIZE) };
-    become dispatch(regs, args, next)
+    become dispatch(regs, next)
 }
 
 #[inline(never)]
-extern "rust-preserve-none" fn op_loadarg(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
-    let dest = unsafe { *ip.add(1) };
-    let idx = unsafe { *ip.add(2) };
-    unsafe {
-        *regs.add(dest as usize) = *args.add(idx as usize);
-    }
-    let next = unsafe { ip.add(LOADARG_SIZE) };
-    become dispatch(regs, args, next)
-}
-
-#[inline(never)]
-extern "rust-preserve-none" fn op_move(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn op_move(regs: *mut i64, ip: *const u8) -> i64 {
     let dest = unsafe { *ip.add(1) };
     let src = unsafe { *ip.add(2) };
     unsafe {
         *regs.add(dest as usize) = *regs.add(src as usize);
     }
     let next = unsafe { ip.add(MOVE_SIZE) };
-    become dispatch(regs, args, next)
+    become dispatch(regs, next)
 }
 
 #[inline(never)]
-extern "rust-preserve-none" fn op_add(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn op_add(regs: *mut i64, ip: *const u8) -> i64 {
     let dest = unsafe { *ip.add(1) };
     let a = unsafe { *ip.add(2) };
     let b = unsafe { *ip.add(3) };
@@ -362,11 +344,11 @@ extern "rust-preserve-none" fn op_add(regs: *mut i64, args: *const i64, ip: *con
         *regs.add(dest as usize) = av + bv;
     }
     let next = unsafe { ip.add(ADD_SIZE) };
-    become dispatch(regs, args, next)
+    become dispatch(regs, next)
 }
 
 #[inline(never)]
-extern "rust-preserve-none" fn op_addimm(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn op_addimm(regs: *mut i64, ip: *const u8) -> i64 {
     let dest = unsafe { *ip.add(1) };
     let a = unsafe { *ip.add(2) };
     let imm = unsafe { ip.add(3).cast::<i64>().read_unaligned() };
@@ -375,11 +357,11 @@ extern "rust-preserve-none" fn op_addimm(regs: *mut i64, args: *const i64, ip: *
         *regs.add(dest as usize) = av + imm;
     }
     let next = unsafe { ip.add(ADDIMM_SIZE) };
-    become dispatch(regs, args, next)
+    become dispatch(regs, next)
 }
 
 #[inline(never)]
-extern "rust-preserve-none" fn op_jmpzn(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn op_jmpzn(regs: *mut i64, ip: *const u8) -> i64 {
     let reg = unsafe { *ip.add(1) };
     let offset = unsafe { ip.add(2).cast::<i32>().read_unaligned() };
     let cond = unsafe { *regs.add(reg as usize) };
@@ -388,18 +370,18 @@ extern "rust-preserve-none" fn op_jmpzn(regs: *mut i64, args: *const i64, ip: *c
     } else {
         unsafe { ip.add(JMPZN_SIZE) }
     };
-    become dispatch(regs, args, next)
+    become dispatch(regs, next)
 }
 
 #[inline(never)]
-extern "rust-preserve-none" fn op_jmp(regs: *mut i64, args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn op_jmp(regs: *mut i64, ip: *const u8) -> i64 {
     let offset = unsafe { ip.add(1).cast::<i32>().read_unaligned() };
     let next = unsafe { ip.offset(offset as isize) };
-    become dispatch(regs, args, next)
+    become dispatch(regs, next)
 }
 
 #[inline(never)]
-extern "rust-preserve-none" fn op_ret(regs: *mut i64, _args: *const i64, ip: *const u8) -> i64 {
+extern "rust-preserve-none" fn op_ret(regs: *mut i64, ip: *const u8) -> i64 {
     let reg = unsafe { *ip.add(1) };
     unsafe { *regs.add(reg as usize) }
 }
